@@ -1,0 +1,84 @@
+name: Update Project SEKAI JP AppHash
+
+on:
+  schedule:
+    # Every 30 minutes (UTC); GitHub scheduled runs are best-effort.
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force download and re-extract the latest Android XAPK'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sekai-jp-apphash
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_update: ${{ steps.check.outputs.needs_update }}
+      remote_version: ${{ steps.check.outputs.remote_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check JP version
+        id: check
+        env:
+          FORCE_UPDATE: ${{ inputs.force_update || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$FORCE_UPDATE" == "true" ]]; then
+            args+=(--force)
+          fi
+          python update.py check "${args[@]}"
+
+  update:
+    needs: check
+    if: needs.check.outputs.needs_update == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the only third-party dependency
+        run: python -m pip install --disable-pip-version-check 'UnityPy>=1.20,<2'
+
+      - name: Download XAPK, extract AppHash and update version.json
+        run: >-
+          python update.py update
+          --expected-version "${{ needs.check.outputs.remote_version }}"
+
+      - name: Commit version.json when changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- version.json; then
+            echo '[SKIP] version.json did not change'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add version.json
+          git commit -m "Update Project SEKAI JP AppHash"
+          git push
